@@ -1,0 +1,8 @@
+.venv/
+.venv-1/
+__pycache__/
+credentials.json
+youtube_token.json
+heygen_session.json
+*.pyc
+.env
