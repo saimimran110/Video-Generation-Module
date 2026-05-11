@@ -6,6 +6,7 @@ All original functionality preserved + fixes applied.
 
 import asyncio
 import os
+import random
 import sys
 from datetime import datetime
 from playwright.async_api import async_playwright
@@ -519,16 +520,43 @@ async def wait_and_download_latest_video(page, custom_filename=None):
 async def main(news_script=None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(
-            storage_state=AUTH_FILE,
-            accept_downloads=True,
-        )
+        
+        context_options = {"accept_downloads": True}
+        if os.path.exists(AUTH_FILE):
+            context_options["storage_state"] = AUTH_FILE
+            
+        context = await browser.new_context(**context_options)
         page = await context.new_page()
         downloaded_file = None
 
         print("[>] Opening HeyGen...")
         await page.goto("https://app.heygen.com", timeout=60000)
         await page.wait_for_timeout(3000)
+
+        # Check if login is required
+        current_url = page.url.lower()
+        if "login" in current_url or "sign" in current_url or "auth" in current_url:
+            print("\n[!] Login required! Session expired or missing.")
+            print("[!] Please log in manually in the opened browser window.")
+            print("[!] The script will pause and wait until you reach the dashboard...")
+            
+            while True:
+                curr = page.url.lower()
+                if "login" not in curr and "sign" not in curr and "auth" not in curr:
+                    break
+                await page.wait_for_timeout(2000)
+            
+            print("[✓] Login detected! Waiting a few seconds for dashboard to fully load...")
+            await page.wait_for_timeout(5000)
+            await context.storage_state(path=AUTH_FILE)
+            print(f"[✓] New session successfully saved to '{AUTH_FILE}'.")
+            print("[>] Resuming automation...\n")
+        else:
+            # Refresh session to keep it alive
+            try:
+                await context.storage_state(path=AUTH_FILE)
+            except Exception:
+                pass
 
         print("[>] Looking for 'Make an avatar video from a photo'...")
         photo_option = await pick_first_visible(page, [
@@ -644,6 +672,107 @@ async def main(news_script=None):
                             """)
                             await page.wait_for_timeout(1500)
                             print("[✓] Nicholas clicked via JavaScript!")
+
+                    # ── STEP: Pick a random look from Nicholas's looks grid ──
+                    print("[>] Waiting for Nicholas looks grid to load...")
+                    await page.wait_for_timeout(2000)
+
+                    random_look_picked = False
+                    try:
+                        # Find all look options inside the grid
+                        looks_grid = page.locator('div.tw-grid.tw-grid-cols-3')
+                        await looks_grid.first.wait_for(state="visible", timeout=5000)
+
+                        look_items = looks_grid.first.locator(
+                            'div.tw-relative.tw-cursor-pointer.tw-overflow-hidden.tw-rounded-lg'
+                        )
+                        look_count = await look_items.count()
+                        print(f"[>] Found {look_count} looks available.")
+
+                        if look_count > 1:
+                            # Pick a random index (any look, including the first)
+                            rand_idx = random.randint(0, look_count - 1)
+                            print(f"[>] Randomly selecting look #{rand_idx + 1} out of {look_count}...")
+                            chosen_look = look_items.nth(rand_idx)
+                            await chosen_look.click(force=True)
+                            await page.wait_for_timeout(1500)
+                            print(f"[✓] Look #{rand_idx + 1} clicked!")
+                            random_look_picked = True
+                        elif look_count == 1:
+                            await look_items.first.click(force=True)
+                            await page.wait_for_timeout(1500)
+                            print("[✓] Only 1 look available, selected it.")
+                            random_look_picked = True
+                    except Exception as e:
+                        print(f"[!] Could not pick random look via Playwright: {e}")
+
+                    # JS fallback for random look selection
+                    if not random_look_picked:
+                        try:
+                            result = await page.evaluate('''
+                                () => {
+                                    const grid = document.querySelector('.tw-grid.tw-grid-cols-3');
+                                    if (!grid) return 'Grid not found';
+                                    const items = Array.from(grid.querySelectorAll(
+                                        'div.tw-relative.tw-cursor-pointer.tw-overflow-hidden.tw-rounded-lg'
+                                    )).filter(el => el.offsetParent !== null);
+                                    if (items.length === 0) return 'No look items found';
+                                    const idx = Math.floor(Math.random() * items.length);
+                                    items[idx].click();
+                                    return 'Clicked look #' + (idx + 1) + ' of ' + items.length;
+                                }
+                            ''')
+                            print(f"[>] JS random look result: {result}")
+                            if 'Clicked' in result:
+                                random_look_picked = True
+                            await page.wait_for_timeout(1500)
+                        except Exception as e:
+                            print(f"[!] JS fallback also failed: {e}")
+
+                    # Click "Change look" button to confirm selection
+                    if random_look_picked:
+                        print("[>] Clicking 'Change look' button...")
+                        change_look_clicked = False
+                        for sel in [
+                            'div[role="button"]:has-text("Change look")',
+                            '[role="button"]:has-text("Change look")',
+                            'button:has-text("Change look")',
+                            'span:has-text("Change look")',
+                        ]:
+                            try:
+                                loc = page.locator(sel).first
+                                if await loc.is_visible(timeout=3000):
+                                    await loc.click(force=True)
+                                    await page.wait_for_timeout(2000)
+                                    print("[✓] 'Change look' clicked!")
+                                    change_look_clicked = True
+                                    break
+                            except Exception:
+                                continue
+
+                        if not change_look_clicked:
+                            # JS fallback for Change look button
+                            result = await page.evaluate('''
+                                () => {
+                                    const els = Array.from(document.querySelectorAll(
+                                        'div[role="button"], button, span'
+                                    )).filter(el => {
+                                        const t = (el.innerText || '').trim();
+                                        return t === 'Change look' && el.offsetParent !== null;
+                                    });
+                                    if (els.length > 0) {
+                                        els[0].click();
+                                        return true;
+                                    }
+                                    return false;
+                                }
+                            ''')
+                            if result:
+                                print("[✓] 'Change look' clicked via JS!")
+                            else:
+                                print("[!] Could not find 'Change look' button.")
+                                await page.screenshot(path="debug_change_look.png")
+                            await page.wait_for_timeout(2000)
 
                     # Dialog monitor will handle any popups automatically
                     await page.wait_for_timeout(2000)
