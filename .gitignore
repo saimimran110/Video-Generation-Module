@@ -6,3 +6,4 @@ youtube_token.json
 heygen_session.json
 *.pyc
 .env
+heygen_downloads/*.mp3
